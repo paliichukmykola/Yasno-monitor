@@ -1,29 +1,4 @@
-name: Yasno Monitor for Kyiv 3.2
-
-on:
-  schedule:
-    - cron: "*/15 * * * *"
-  workflow_dispatch:
-
-jobs:
-  monitor:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Cache last status
-        uses: actions/cache@v3
-        with:
-          path: status.txt
-          key: yasno-status-v2
-          restore-keys: yasno-status-v2
-
-      - name: Check schedule and send Telegram
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
+run: |
           QUEUE="3.2"
           API_URL="https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
           WEEKDAY=$(date '+%A')
@@ -48,7 +23,7 @@ jobs:
 
           if [ -z "$QUEUE_TODAY" ] || [ "$QUEUE_TODAY" == "null" ]; then
             echo "::warning:: No 'today' data found for queue $QUEUE."
-            MESSAGE="🤷‍♂️ Не вдалося отримати дані для групи $QUEUE ($WEEKDAY)"
+            MESSAGE="<b>🤷‍♂️ Помилка: Група $QUEUE ($WEEKDAY)</b>\n\nНе вдалося отримати дані YASNO."
             ALERT_HASH="error-$(date +%H)"
           else
             DEFINITE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Definite") | "\(.start) \(.end)"')
@@ -58,27 +33,28 @@ jobs:
             ALERT_HASH=""
 
             if [ -n "$DEFINITE_SLOTS" ]; then
-              MESSAGE="🪫 Гарантовані відключення: $QUEUE ($WEEKDAY)\n"
+              MESSAGE="<b>🪫 Планові відключення: Група $QUEUE ($WEEKDAY)</b>\n\n<b>Гарантовані слоти:</b>\n"
               ALERT_HASH="off"
               while IFS= read -r SLOT; do
                 START_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f1))
                 END_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f2))
-                MESSAGE+="  • $START_TIME - $END_TIME\n"
+                MESSAGE+="• <code>$START_TIME - $END_TIME</code>\n"
                 ALERT_HASH+="-$START_TIME-$END_TIME"
               done <<< "$DEFINITE_SLOTS"
             
             elif [ -n "$PROBABLE_SLOTS" ]; then
-              MESSAGE="⚠️ Можливі відключення: $QUEUE ($WEEKDAY)\n"
+              MESSAGE="<b>⚠️ Можливі відключення: $QUEUE ($WEEKDAY)</b>\n\n<b>Ймовірні слоти:</b>\n"
               ALERT_HASH="maybe"
               while IFS= read -r SLOT; do
                 START_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f1))
                 END_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f2))
-                MESSAGE+="  • $START_TIME - $END_TIME\n"
+                MESSAGE+="• <code>$START_TIME - $END_TIME</code>\n"
                 ALERT_HASH+="-$START_TIME-$END_TIME"
               done <<< "$PROBABLE_SLOTS"
 
             else
-              MESSAGE="✅ Світло буде весь день (група $QUEUE) $WEEKDAY"
+              # --- ОСЬ ТУТ ЗМІНА ---
+              MESSAGE="<b>✅ Відключення не заплановані: Група $QUEUE ($WEEKDAY)</b>\n\nЗа графіком, відключень не заплановано."
               ALERT_HASH="on"
             fi
           fi
@@ -91,7 +67,7 @@ jobs:
 
           if [ "$PREV" != "$ALERT_HASH" ]; then
             echo "Status changed. Sending notification..."
-            PAYLOAD=$(jq -n --arg chat_id "$CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text}')
+            PAYLOAD=$(jq -n --arg chat_id "$CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
             
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
               -H 'Content-Type: application/json' \
