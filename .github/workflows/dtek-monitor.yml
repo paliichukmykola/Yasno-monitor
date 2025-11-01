@@ -16,7 +16,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: status.txt
-          key: yasno-status-v2 # Змінив ключ кешу на v2
+          key: yasno-status-v2
           restore-keys: yasno-status-v2
 
       - name: Check schedule and send Telegram
@@ -24,21 +24,18 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          # --- Налаштування ---
-          QUEUE="3.2" # Ваша група
+          QUEUE="3.2"
           API_URL="https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
           WEEKDAY=$(date '+%A')
 
-          # --- Функція конвертації хвилин в HH:MM ---
           min_to_hhmm() {
             MINUTES=$1
             HH=$((MINUTES / 60))
             MM=$((MINUTES % 60))
             printf "%02d:%02d" $HH $MM
           }
-          export -f min_to_hhmm # Потрібно для sub-shell
+          export -f min_to_hhmm
 
-          # --- 1. Отримання даних ---
           echo "Fetching data from NEW Yasno API for queue $QUEUE..."
           OUTAGES=$(curl -s "$API_URL")
 
@@ -47,8 +44,6 @@ jobs:
             exit 1
           fi
 
-          # --- 2. Обробка JSON ---
-          # Отримуємо об'єкт .today для нашої групи
           QUEUE_TODAY=$(echo "$OUTAGES" | jq -c --arg q "$QUEUE" '.[$q].today')
 
           if [ -z "$QUEUE_TODAY" ] || [ "$QUEUE_TODAY" == "null" ]; then
@@ -56,10 +51,7 @@ jobs:
             MESSAGE="🤷‍♂️ Не вдалося отримати дані для групи $QUEUE ($WEEKDAY)"
             ALERT_HASH="error-$(date +%H)"
           else
-            # Шукаємо ГАРАНТОВАНІ відключення
             DEFINITE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Definite") | "\(.start) \(.end)"')
-            
-            # Шукаємо МОЖЛИВІ відключення (припускаємо, що тип "Probable")
             PROBABLE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Probable") | "\(.start) \(.end)"')
 
             MESSAGE=""
@@ -91,7 +83,6 @@ jobs:
             fi
           fi
 
-          # --- 3. Відправка повідомлення (якщо є зміни) ---
           echo -e "Generated Message:\n$MESSAGE"
           echo "Generated Hash: $ALERT_HASH"
 
@@ -100,7 +91,6 @@ jobs:
 
           if [ "$PREV" != "$ALERT_HASH" ]; then
             echo "Status changed. Sending notification..."
-            # Перетворюємо MESSAGE для безпечної передачі в curl
             PAYLOAD=$(jq -n --arg chat_id "$CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text}')
             
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
@@ -114,5 +104,4 @@ jobs:
           fi
 
       - name: Complete
-        # Цей крок тепер має правильний відступ
         run: echo "Yasno check complete: $(date '+%H:%M %d.%m.%Y')"
