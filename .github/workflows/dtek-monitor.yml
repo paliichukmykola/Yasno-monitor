@@ -61,6 +61,4 @@ jobs:
           fi
 
       - name: Complete
-        env:
-    LANG: C.UTF-8
-        run: echo "Yasno перевірено: $(date '+%H:%M %d.%m.%Y')"
+        run: echo "Yasno check complete: $(date '+%H:%M %d.%m.%Y')"
