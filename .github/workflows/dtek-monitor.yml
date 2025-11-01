@@ -60,6 +60,5 @@ jobs:
           else
             echo "No change, not sending"
           fi
-
-      - name: Complete
+  - name: Complete
         run: echo "Yasno перевірено: $(date '+%H:%M %d.%m.%Y')"
