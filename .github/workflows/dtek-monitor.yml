@@ -9,6 +9,9 @@ jobs:
   monitor:
     runs-on: ubuntu-latest
     steps:
+      - name: Start
+        run: echo "Starting Yasno check at: $(date '+%H:%M %d.%m.%Y')"
+
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
@@ -102,6 +105,3 @@ jobs:
           else
             echo "No change, not sending"
           fi
-      
-      - name: Complete
-        run: echo "Yasno check complete: $(date '+%H:%M %d.%m.%Y')"
