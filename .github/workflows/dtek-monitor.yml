@@ -39,10 +39,7 @@ jobs:
           if echo "$STATUS_TODAY" | grep -q off; then
             FIRST_OFF=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'") and .status=="off")][0].date')
             FIRST_ON=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date > "'"$FIRST_OFF"'") and .status=="on"][0].date')
-            MESSAGE="🪫 Відключення світла: $QUEUE
-Початок: $FIRST_OFF
-Відновлення: $FIRST_ON
-Дата: $DATE_NOW, $WEEKDAY"
+            MESSAGE="🪫 Відключення світла: $QUEUE\nПочаток: $FIRST_OFF\nВідновлення: $FIRST_ON\nДата: $DATE_NOW, $WEEKDAY"
             ALERT_HASH="off-$FIRST_OFF-$FIRST_ON"
           elif echo "$STATUS_TODAY" | grep -q maybe; then
             FIRST_MAYBE=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'") and .status=="maybe")][0].date')
@@ -63,5 +60,6 @@ jobs:
           else
             echo "No change, not sending"
           fi
-  - name: Complete
+
+      - name: Complete
         run: echo "Yasno перевірено: $(date '+%H:%M %d.%m.%Y')"
