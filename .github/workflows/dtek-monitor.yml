@@ -1,4 +1,29 @@
-run: |
+name: Yasno Monitor for Kyiv 3.2
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Cache last status
+        uses: actions/cache@v3
+        with:
+          path: status.txt
+          key: yasno-status-v2
+          restore-keys: yasno-status-v2
+
+      - name: Check schedule and send Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
           QUEUE="3.2"
           API_URL="https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
           WEEKDAY=$(date '+%A')
@@ -77,3 +102,6 @@ run: |
           else
             echo "No change, not sending"
           fi
+      
+      - name: Complete
+        run: echo "Yasno check complete: $(date '+%H:%M %d.%m.%Y')"
