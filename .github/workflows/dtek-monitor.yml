@@ -1,4 +1,4 @@
-name: Yasno Monitor for Kyiv 3.1 (Debug)
+name: Yasno Monitor for Kyiv 3.1
 
 on:
   schedule:
@@ -96,4 +96,4 @@ jobs:
           fi
 
       - name: Complete
-        run: echo "Yasno check complete: $(date '+%H:%M %d.%m.%Y')"
+        run: echo "Ясно перевірка завершена: $(date '+%H:%M %d.%m.%Y')"
