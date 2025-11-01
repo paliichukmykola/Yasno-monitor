@@ -1,4 +1,4 @@
-name: Yasno Monitor for Kyiv 3.1
+name: Yasno Monitor for Kyiv 3.1 (Debug)
 
 on:
   schedule:
@@ -24,38 +24,73 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          echo "--- Starting Yasno Check ---"
           QUEUE="3.1"
           DATE_NOW=$(date '+%Y-%m-%d')
           WEEKDAY=$(date '+%A')
-          TIME_NOW=$(date '+%H:%M')
+          
+          echo "Date: $DATE_NOW, Queue: $QUEUE"
+          
+          echo "Fetching data from Yasno..."
           OUTAGES=$(curl -s https://static.yasno.ua/kyiv/outages)
+          
+          if [ -z "$OUTAGES" ]; then
+            echo "::error:: Failed to fetch data. OUTAGES variable is empty."
+            exit 1
+          fi
+          
+          echo "Data fetched (first 300 chars): ${OUTAGES:0:300}..."
+          
+          echo "Querying JSON for queue $QUEUE..."
           QUEUE_STATUS=$(echo "$OUTAGES" | jq -c --arg q "$QUEUE" '.[$q]')
-          [ -z "$QUEUE_STATUS" ] && echo "No data for queue $QUEUE, exiting." && exit 0
-
+          
+          if [ -z "$QUEUE_STATUS" ] || [ "$QUEUE_STATUS" == "null" ]; then
+            echo "::warning:: No data found for queue $QUEUE. Exiting gracefully."
+            echo "Raw QUEUE_STATUS was: $QUEUE_STATUS"
+            exit 0
+          fi
+          
+          echo "Queue $QUEUE status: $QUEUE_STATUS"
+          
           STATUS_TODAY=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'")) | .status ] | join(",")')
+          echo "Status for today: $STATUS_TODAY"
+          
           MESSAGE=""
           ALERT_HASH=""
+          
           if echo "$STATUS_TODAY" | grep -q off; then
+            echo "Found 'off' status."
             FIRST_OFF=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'") and .status=="off")][0].date')
             FIRST_ON=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date > "'"$FIRST_OFF"'") and .status=="on"][0].date')
             MESSAGE="🪫 Відключення світла: $QUEUE\nПочаток: $FIRST_OFF\nВідновлення: $FIRST_ON\nДата: $DATE_NOW, $WEEKDAY"
             ALERT_HASH="off-$FIRST_OFF-$FIRST_ON"
+          
           elif echo "$STATUS_TODAY" | grep -q maybe; then
+            echo "Found 'maybe' status."
             FIRST_MAYBE=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'") and .status=="maybe")][0].date')
             MESSAGE="⚠️ Можливе відключення (група $QUEUE) $FIRST_MAYBE $DATE_NOW, $WEEKDAY"
             ALERT_HASH="maybe-$FIRST_MAYBE"
+          
           else
+            echo "Found 'on' status."
             MESSAGE="✅ Світло буде весь день (група $QUEUE) $DATE_NOW, $WEEKDAY"
             ALERT_HASH="on"
           fi
+          
+          echo "Generated Message: $MESSAGE"
+          echo "Generated Hash: $ALERT_HASH"
 
           PREV=""
           [ -f status.txt ] && PREV=$(cat status.txt)
+          echo "Previous Hash: $PREV"
+
           if [ "$PREV" != "$ALERT_HASH" ]; then
+            echo "Status changed. Sending notification..."
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
               -d chat_id="${CHAT_ID}" \
               -d text="$MESSAGE"
             echo "$ALERT_HASH" > status.txt
+            echo "New hash saved."
           else
             echo "No change, not sending"
           fi
