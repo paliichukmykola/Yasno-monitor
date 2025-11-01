@@ -9,24 +9,27 @@ jobs:
   monitor:
     runs-on: ubuntu-latest
     steps:
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install dependencies (jq and locales)
+        run: sudo apt-get update && sudo apt-get install -y jq locales-all
 
       - name: Cache last status
         uses: actions/cache@v3
         with:
           path: status.txt
-          key: yasno-status-v2
-          restore-keys: yasno-status-v2
+          key: yasno-status-v3 # Змінено ключ кешу
+          restore-keys: yasno-status-v3
 
       - name: Check schedule and send Telegram
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          export LC_TIME=uk_UA.UTF-8
+          
           QUEUE="3.2"
           API_URL="https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
           WEEKDAY=$(date '+%A')
+          DATE_DMY=$(date '+%d.%m.%Y')
 
           min_to_hhmm() {
             MINUTES=$1
@@ -49,7 +52,8 @@ jobs:
           if [ -z "$QUEUE_TODAY" ] || [ "$QUEUE_TODAY" == "null" ]; then
             echo "::warning:: No 'today' data found for queue $QUEUE."
             MESSAGE="<b>🤷‍♂️ Помилка: Група $QUEUE ($WEEKDAY)</b>\n\nНе вдалося отримати дані YASNO."
-            ALERT_HASH="error-$(date +%H)"
+            # Змінено хеш: тепер 1 повідомлення про помилку на день, а не на годину
+            ALERT_HASH="error-$(date +%Y-%m-%d)"
           else
             DEFINITE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Definite") | "\(.start) \(.end)"')
             PROBABLE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Probable") | "\(.start) \(.end)"')
@@ -78,7 +82,7 @@ jobs:
               done <<< "$PROBABLE_SLOTS"
 
             else
-              MESSAGE="<b>✅ Відключення не заплановані: Група $QUEUE ($WEEKDAY)</b>\n\nЗа графіком, відключень не заплановано."
+              MESSAGE="<b>✅ Світло буде весь день</b>\n\nГрупа $QUEUE - $WEEKDAY - $DATE_DMY\n\nЗа графіком, відключень не заплановано."
               ALERT_HASH="on"
             fi
           fi
@@ -102,3 +106,4 @@ jobs:
           else
             echo "No change, not sending"
           fi
+          
