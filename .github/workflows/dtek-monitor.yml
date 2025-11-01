@@ -1,4 +1,4 @@
-name: Yasno Monitor for Kyiv 3.1
+name: Yasno Monitor for Kyiv 3.2
 
 on:
   schedule:
@@ -16,79 +16,97 @@ jobs:
         uses: actions/cache@v3
         with:
           path: status.txt
-          key: yasno-status
-          restore-keys: yasno-status
+          key: yasno-status-v2 # Змінив ключ кешу на v2
+          restore-keys: yasno-status-v2
 
       - name: Check schedule and send Telegram
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          echo "--- Starting Yasno Check ---"
-          QUEUE="3.1"
-          DATE_NOW=$(date '+%Y-%m-%d')
+          # --- Налаштування ---
+          QUEUE="3.2" # Ваша група
+          API_URL="https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
           WEEKDAY=$(date '+%A')
-          
-          echo "Date: $DATE_NOW, Queue: $QUEUE"
-          
-          echo "Fetching data from Yasno..."
-          OUTAGES=$(curl -s https://static.yasno.ua/kyiv/outages)
-          
-          if [ -z "$OUTAGES" ]; then
-            echo "::error:: Failed to fetch data. OUTAGES variable is empty."
+
+          # --- Функція конвертації хвилин в HH:MM ---
+          min_to_hhmm() {
+            MINUTES=$1
+            HH=$((MINUTES / 60))
+            MM=$((MINUTES % 60))
+            printf "%02d:%02d" $HH $MM
+          }
+          export -f min_to_hhmm # Потрібно для sub-shell
+
+          # --- 1. Отримання даних ---
+          echo "Fetching data from NEW Yasno API for queue $QUEUE..."
+          OUTAGES=$(curl -s "$API_URL")
+
+          if [ -z "$OUTAGES" ] || echo "$OUTAGES" | grep -q "error"; then
+            echo "::error:: Failed to fetch data or API returned error."
             exit 1
           fi
-          
-          echo "Data fetched (first 300 chars): ${OUTAGES:0:300}..."
-          
-          echo "Querying JSON for queue $QUEUE..."
-          QUEUE_STATUS=$(echo "$OUTAGES" | jq -c --arg q "$QUEUE" '.[$q]')
-          
-          if [ -z "$QUEUE_STATUS" ] || [ "$QUEUE_STATUS" == "null" ]; then
-            echo "::warning:: No data found for queue $QUEUE. Exiting gracefully."
-            echo "Raw QUEUE_STATUS was: $QUEUE_STATUS"
-            exit 0
-          fi
-          
-          echo "Queue $QUEUE status: $QUEUE_STATUS"
-          
-          STATUS_TODAY=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'")) | .status ] | join(",")')
-          echo "Status for today: $STATUS_TODAY"
-          
-          MESSAGE=""
-          ALERT_HASH=""
-          
-          if echo "$STATUS_TODAY" | grep -q off; then
-            echo "Found 'off' status."
-            FIRST_OFF=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'") and .status=="off")][0].date')
-            FIRST_ON=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date > "'"$FIRST_OFF"'") and .status=="on"][0].date')
-            MESSAGE="🪫 Відключення світла: $QUEUE\nПочаток: $FIRST_OFF\nВідновлення: $FIRST_ON\nДата: $DATE_NOW, $WEEKDAY"
-            ALERT_HASH="off-$FIRST_OFF-$FIRST_ON"
-          
-          elif echo "$STATUS_TODAY" | grep -q maybe; then
-            echo "Found 'maybe' status."
-            FIRST_MAYBE=$(echo "$QUEUE_STATUS" | jq -r '[ .[] | select(.date | startswith("'"$DATE_NOW"'") and .status=="maybe")][0].date')
-            MESSAGE="⚠️ Можливе відключення (група $QUEUE) $FIRST_MAYBE $DATE_NOW, $WEEKDAY"
-            ALERT_HASH="maybe-$FIRST_MAYBE"
-          
+
+          # --- 2. Обробка JSON ---
+          # Отримуємо об'єкт .today для нашої групи
+          QUEUE_TODAY=$(echo "$OUTAGES" | jq -c --arg q "$QUEUE" '.[$q].today')
+
+          if [ -z "$QUEUE_TODAY" ] || [ "$QUEUE_TODAY" == "null" ]; then
+            echo "::warning:: No 'today' data found for queue $QUEUE."
+            MESSAGE="🤷‍♂️ Не вдалося отримати дані для групи $QUEUE ($WEEKDAY)"
+            ALERT_HASH="error-$(date +%H)"
           else
-            echo "Found 'on' status."
-            MESSAGE="✅ Світло буде весь день (група $QUEUE) $DATE_NOW, $WEEKDAY"
-            ALERT_HASH="on"
+            # Шукаємо ГАРАНТОВАНІ відключення
+            DEFINITE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Definite") | "\(.start) \(.end)"')
+            
+            # Шукаємо МОЖЛИВІ відключення (припускаємо, що тип "Probable")
+            PROBABLE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Probable") | "\(.start) \(.end)"')
+
+            MESSAGE=""
+            ALERT_HASH=""
+
+            if [ -n "$DEFINITE_SLOTS" ]; then
+              MESSAGE="🪫 Гарантовані відключення: $QUEUE ($WEEKDAY)\n"
+              ALERT_HASH="off"
+              while IFS= read -r SLOT; do
+                START_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f1))
+                END_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f2))
+                MESSAGE+="  • $START_TIME - $END_TIME\n"
+                ALERT_HASH+="-$START_TIME-$END_TIME"
+              done <<< "$DEFINITE_SLOTS"
+            
+            elif [ -n "$PROBABLE_SLOTS" ]; then
+              MESSAGE="⚠️ Можливі відключення: $QUEUE ($WEEKDAY)\n"
+              ALERT_HASH="maybe"
+              while IFS= read -r SLOT; do
+                START_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f1))
+                END_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f2))
+                MESSAGE+="  • $START_TIME - $END_TIME\n"
+                ALERT_HASH+="-$START_TIME-$END_TIME"
+              done <<< "$PROBABLE_SLOTS"
+
+            else
+              MESSAGE="✅ Світло буде весь день (група $QUEUE) $WEEKDAY"
+              ALERT_HASH="on"
+            fi
           fi
-          
-          echo "Generated Message: $MESSAGE"
+
+          # --- 3. Відправка повідомлення (якщо є зміни) ---
+          echo -e "Generated Message:\n$MESSAGE"
           echo "Generated Hash: $ALERT_HASH"
 
           PREV=""
           [ -f status.txt ] && PREV=$(cat status.txt)
-          echo "Previous Hash: $PREV"
 
           if [ "$PREV" != "$ALERT_HASH" ]; then
             echo "Status changed. Sending notification..."
+            # Перетворюємо MESSAGE для безпечної передачі в curl
+            PAYLOAD=$(jq -n --arg chat_id "$CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text}')
+            
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-              -d chat_id="${CHAT_ID}" \
-              -d text="$MESSAGE"
+              -H 'Content-Type: application/json' \
+              -d "$PAYLOAD"
+              
             echo "$ALERT_HASH" > status.txt
             echo "New hash saved."
           else
@@ -96,4 +114,5 @@ jobs:
           fi
 
       - name: Complete
+        # Цей крок тепер має правильний відступ
         run: echo "Yasno check complete: $(date '+%H:%M %d.%m.%Y')"
