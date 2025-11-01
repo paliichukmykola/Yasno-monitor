@@ -102,6 +102,3 @@ jobs:
           else
             echo "No change, not sending"
           fi
-
-      - name: Complete
-        run: echo "Yasno check complete: $(date '+%H:%M %d.%m.%Y')"
