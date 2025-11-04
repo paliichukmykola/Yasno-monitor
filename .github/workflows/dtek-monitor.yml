@@ -24,12 +24,14 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          # Встановлюємо українську локаль для дати
+          # Встановлюємо часовий пояс Києва
+          export TZ="Europe/Kyiv"
           export LC_TIME=uk_UA.UTF-8
           
           QUEUE="3.2"
           API_URL="https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
 
+          # Функція конвертації
           min_to_hhmm() {
             MINUTES=$1
             HH=$((MINUTES / 60))
@@ -46,54 +48,71 @@ jobs:
             exit 1
           fi
 
-          # Отримуємо дані "на сьогодні"
-          QUEUE_TODAY=$(echo "$OUTAGES" | jq -c --arg q "$QUEUE" '.[$q].today')
+          # --- НОВА ЛОГІКА ДЛЯ ВИЗНАЧЕННЯ ПРАВИЛЬНОЇ ДАТИ ---
+          CURRENT_LOCAL_DATE=$(date '+%Y-%m-%d')
+          echo "Current Kyiv date is: $CURRENT_LOCAL_DATE"
 
-          if [ -z "$QUEUE_TODAY" ] || [ "$QUEUE_TODAY" == "null" ]; then
-            echo "::warning:: No 'today' data found for queue $QUEUE."
-            # Якщо даних немає, використовуємо системну дату як запасний варіант
+          API_TODAY_DATE=$(echo "$OUTAGES" | jq -r --arg q "$QUEUE" '.[$q].today.date' | cut -d'T' -f1)
+          API_TOMORROW_DATE=$(echo "$OUTAGES" | jq -r --arg q "$QUEUE" '.[$q].tomorrow.date' | cut -d'T' -f1)
+
+          QUEUE_DATA=""
+          if [ "$CURRENT_LOCAL_DATE" == "$API_TODAY_DATE" ]; then
+            echo "Using .today object from API"
+            QUEUE_DATA=$(echo "$OUTAGES" | jq -c --arg q "$QUEUE" '.[$q].today')
+          elif [ "$CURRENT_LOCAL_DATE" == "$API_TOMORROW_DATE" ]; then
+            echo "Using .tomorrow object from API"
+            QUEUE_DATA=$(echo "$OUTAGES" | jq -c --arg q "$QUEUE" '.[$q].tomorrow')
+          else
+            echo "::warning:: API data is outdated. No data for $CURRENT_LOCAL_DATE."
+          fi
+          # --- КІНЕЦЬ НОВОЇ ЛОГІКИ ---
+
+          if [ -z "$QUEUE_DATA" ] || [ "$QUEUE_DATA" == "null" ]; then
+            echo "::warning:: No data found for queue $QUEUE for $CURRENT_LOCAL_DATE."
             WEEKDAY=$(date '+%A')
-            MESSAGE="<b>🤷‍♂️ Помилка: Група $QUEUE ($WEEKDAY)</b>\nНе вдалося отримати дані YASNO."
+            MESSAGE="<b>🤷‍♂️ Помилка: Група $QUEUE ($WEEKDAY)</b>\nНе вдалося знайти актуальні дані YASNO."
             ALERT_HASH="error-$(date +%Y-%m-%d)"
           else
-            # --- ОСНОВНІ ЗМІНИ ТУТ ---
-            # 1. Отримуємо дату з API
-            ISO_DATE=$(echo "$QUEUE_TODAY" | jq -r '.date')
-            # 2. Конвертуємо її в потрібний формат
+            # Отримуємо дату з API
+            ISO_DATE=$(echo "$QUEUE_DATA" | jq -r '.date')
             DATE_DMY=$(date -d "$ISO_DATE" '+%d.%m.%Y')
             WEEKDAY=$(date -d "$ISO_DATE" '+%A')
 
-            DEFINITE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Definite") | "\(.start) \(.end)"')
-            PROBABLE_SLOTS=$(echo "$QUEUE_TODAY" | jq -r '.slots[] | select(.type == "Probable") | "\(.start) \(.end)"')
+            DEFINITE_SLOTS=$(echo "$QUEUE_DATA" | jq -r '.slots[] | select(.type == "Definite") | "\(.start) \(.end)"')
+            PROBABLE_SLOTS=$(echo "$QUEUE_DATA" | jq -r '.slots[] | select(.type == "Probable") | "\(.start) \(.end)"')
 
             MESSAGE=""
             ALERT_HASH=""
 
+            # Використовуємо $'' для правильної обробки \n
             if [ -n "$DEFINITE_SLOTS" ]; then
-              # Виправлено форматування (прибрано \n\n)
-              MESSAGE="<b>🪫 Планові відключення: Група $QUEUE ($WEEKDAY)</b>\n<b>Гарантовані слоти:</b>\n"
+              MESSAGE=$'<b>🪫 Планові відключення</b>\n'
+              MESSAGE+=$"Група $QUEUE - $WEEKDAY - $DATE_DMY\n\n"
+              MESSAGE+=$'<b>🗓️ Визначений час:</b>\n'
               ALERT_HASH="off"
               while IFS= read -r SLOT; do
                 START_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f1))
                 END_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f2))
-                MESSAGE+="• <code>$START_TIME - $END_TIME</code>\n"
+                MESSAGE+=$"• <code>$START_TIME - $END_TIME</code>\n"
                 ALERT_HASH+="-$START_TIME-$END_TIME"
               done <<< "$DEFINITE_SLOTS"
             
             elif [ -n "$PROBABLE_SLOTS" ]; then
-              # Виправлено форматування (прибрано \n\n)
-              MESSAGE="<b>⚠️ Можливі відключення: $QUEUE ($WEEKDAY)</b>\n<b>Ймовірні слоти:</b>\n"
+              MESSAGE=$'<b>⚠️ Можливі відключення</b>\n'
+              MESSAGE+=$"Група $QUEUE - $WEEKDAY - $DATE_DMY\n\n"
+              MESSAGE+=$'<b>🗓️ Ймовірний час:</b>\n'
               ALERT_HASH="maybe"
               while IFS= read -r SLOT; do
                 START_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f1))
                 END_TIME=$(min_to_hhmm $(echo $SLOT | cut -d' ' -f2))
-                MESSAGE+="• <code>$START_TIME - $END_TIME</code>\n"
+                MESSAGE+=$"• <code>$START_TIME - $END_TIME</code>\n"
                 ALERT_HASH+="-$START_TIME-$END_TIME"
               done <<< "$PROBABLE_SLOTS"
 
             else
-              # Виправлено форматування та використано дату з API
-              MESSAGE="<b>✅ Світло буде весь день</b>\nГрупа $QUEUE - $WEEKDAY - $DATE_DMY\nЗа графіком відключень не заплановано."
+              MESSAGE=$'<b>✅ Світло буде весь день</b>\n'
+              MESSAGE+=$"Група $QUEUE - $WEEKDAY - $DATE_DMY\n\n"
+              MESSAGE+=$'За графіком відключень не заплановано.'
               ALERT_HASH="on"
             fi
           fi
@@ -106,7 +125,8 @@ jobs:
 
           if [ "$PREV" != "$ALERT_HASH" ]; then
             echo "Status changed. Sending notification..."
-            PAYLOAD=$(jq -n --arg chat_id "$CHAT_ID" --arg text "$MESSAGE" '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
+            # Використовуємо 'inputs' для безпечної передачі багаторядкового тексту в JSON
+            PAYLOAD=$(echo "$MESSAGE" | jq -n --arg chat_id "$CHAT_ID" --arg parse_mode "HTML" '{chat_id: $chat_id, text: inputs, parse_mode: $parse_mode}')
             
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
               -H 'Content-Type: application/json' \
@@ -117,4 +137,3 @@ jobs:
           else
             echo "No change, not sending"
           fi
-          
