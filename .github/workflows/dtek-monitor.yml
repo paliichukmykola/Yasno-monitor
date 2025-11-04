@@ -23,6 +23,8 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+        # --- ВИПРАВЛЕННЯ 1: Примусово вмикаємо bash ---
+        shell: bash
         run: |
           # Встановлюємо часовий пояс Києва
           export TZ="Europe/Kyiv"
@@ -47,8 +49,7 @@ jobs:
             echo "::error:: Failed to fetch data or API returned error."
             exit 1
           fi
-
-          # --- НОВА ЛОГІКА ДЛЯ ВИЗНАЧЕННЯ ПРАВИЛЬНОЇ ДАТИ ---
+          
           CURRENT_LOCAL_DATE=$(date '+%Y-%m-%d')
           echo "Current Kyiv date is: $CURRENT_LOCAL_DATE"
 
@@ -65,7 +66,6 @@ jobs:
           else
             echo "::warning:: API data is outdated. No data for $CURRENT_LOCAL_DATE."
           fi
-          # --- КІНЕЦЬ НОВОЇ ЛОГІКИ ---
 
           if [ -z "$QUEUE_DATA" ] || [ "$QUEUE_DATA" == "null" ]; then
             echo "::warning:: No data found for queue $QUEUE for $CURRENT_LOCAL_DATE."
@@ -73,7 +73,6 @@ jobs:
             MESSAGE="<b>🤷‍♂️ Помилка: Група $QUEUE ($WEEKDAY)</b>\nНе вдалося знайти актуальні дані YASNO."
             ALERT_HASH="error-$(date +%Y-%m-%d)"
           else
-            # Отримуємо дату з API
             ISO_DATE=$(echo "$QUEUE_DATA" | jq -r '.date')
             DATE_DMY=$(date -d "$ISO_DATE" '+%d.%m.%Y')
             WEEKDAY=$(date -d "$ISO_DATE" '+%A')
@@ -84,7 +83,7 @@ jobs:
             MESSAGE=""
             ALERT_HASH=""
 
-            # Використовуємо $'' для правильної обробки \n
+            # Використовуємо $'' (C-style strings), що тепер працюватиме завдяки 'shell: bash'
             if [ -n "$DEFINITE_SLOTS" ]; then
               MESSAGE=$'<b>🪫 Планові відключення</b>\n'
               MESSAGE+=$"Група $QUEUE - $WEEKDAY - $DATE_DMY\n\n"
@@ -125,8 +124,8 @@ jobs:
 
           if [ "$PREV" != "$ALERT_HASH" ]; then
             echo "Status changed. Sending notification..."
-            # Використовуємо 'inputs' для безпечної передачі багаторядкового тексту в JSON
-            PAYLOAD=$(echo "$MESSAGE" | jq -n --arg chat_id "$CHAT_ID" --arg parse_mode "HTML" '{chat_id: $chat_id, text: inputs, parse_mode: $parse_mode}')
+            # --- ВИПРАВЛЕННЯ 2: Повертаємо безпечну команду jq ---
+            PAYLOAD=$(jq -n --arg chat_id "$CHAT_ID" --arg text "$MESSAGE" --arg parse_mode "HTML" '{chat_id: $chat_id, text: $text, parse_mode: $parse_mode}')
             
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
               -H 'Content-Type: application/json' \
